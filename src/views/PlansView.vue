@@ -2,7 +2,7 @@
 import { computed, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
-import type { Domain, StudyPlan, StudyResource } from '@/types'
+import type { Domain, PlanProgress, StudyPlan, StudyResource } from '@/types'
 import { DOMAINS } from '@/constants'
 import { computePlanProgress } from '@/utils/progress'
 import { today } from '@/utils/date'
@@ -47,12 +47,53 @@ const rules: FormRules = {
   dailyHours: [{ required: true, message: '请输入每日学习时长', trigger: 'blur' }],
 }
 
+type PlanStatus = PlanProgress['status']
+
+/** 计划状态筛选项（列表派生只依赖这些状态，保证结果与筛选条件一致） */
+const STATUS_OPTIONS: PlanStatus[] = ['未开始', '进行中', '已完成', '已逾期']
+
+/** 排序方式：创建顺序 / 开始日期升降序 / 进度升降序 */
+type SortKey = 'created' | 'startDateAsc' | 'startDateDesc' | 'progressAsc' | 'progressDesc'
+
+const filterStatus = ref<PlanStatus | ''>('')
+const filterDomain = ref<Domain | ''>('')
+const sortBy = ref<SortKey>('created')
+
 const planViews = computed(() =>
   plansStore.plans.map((plan) => ({
     plan,
     progress: computePlanProgress(plan, logsStore.logs),
   })),
 )
+
+/** 筛选 + 排序后的计划视图（两者叠加，任一条变化列表立即更新） */
+const visiblePlanViews = computed(() => {
+  const list = planViews.value.filter(
+    ({ plan, progress }) =>
+      (!filterStatus.value || progress.status === filterStatus.value) &&
+      (!filterDomain.value || plan.domain === filterDomain.value),
+  )
+
+  if (sortBy.value === 'created') return list
+
+  const dir = sortBy.value.endsWith('Asc') ? 1 : -1
+  const by = sortBy.value.startsWith('startDate')
+    ? (v: (typeof list)[number]) => v.plan.startDate
+    : (v: (typeof list)[number]) => v.progress.percent
+  return [...list].sort((a, b) => {
+    const va = by(a)
+    const vb = by(b)
+    if (va === vb) return 0
+    return va > vb ? dir : -dir
+  })
+})
+
+const hasFilter = computed(() => Boolean(filterStatus.value || filterDomain.value))
+
+function resetFilter(): void {
+  filterStatus.value = ''
+  filterDomain.value = ''
+}
 
 const statusTagType: Record<string, 'info' | 'success' | 'danger' | 'primary'> = {
   未开始: 'info',
@@ -126,10 +167,36 @@ function removePlan(plan: StudyPlan): void {
       <el-button type="primary" @click="openCreate">新建计划</el-button>
     </div>
 
-    <el-empty v-if="planViews.length === 0" description="还没有学习计划，点击右上角新建" />
+    <div class="filter-bar">
+      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 140px">
+        <el-option v-for="s in STATUS_OPTIONS" :key="s" :label="s" :value="s" />
+      </el-select>
+      <el-select v-model="filterDomain" placeholder="全部领域" clearable style="width: 140px">
+        <el-option v-for="d in DOMAINS" :key="d" :label="d" :value="d" />
+      </el-select>
+      <el-select v-model="sortBy" style="width: 160px">
+        <el-option label="按创建顺序" value="created" />
+        <el-option label="开始日期：由近到远" value="startDateDesc" />
+        <el-option label="开始日期：由远到近" value="startDateAsc" />
+        <el-option label="进度：从低到高" value="progressAsc" />
+        <el-option label="进度：从高到低" value="progressDesc" />
+      </el-select>
+      <span v-if="hasFilter" class="filter-summary">
+        匹配 {{ visiblePlanViews.length }} / {{ planViews.length }} 个
+        <el-button link type="primary" size="small" @click="resetFilter">清除筛选</el-button>
+      </span>
+    </div>
 
-    <div class="plan-list">
-      <el-card v-for="{ plan, progress } in planViews" :key="plan.id" class="plan-card" shadow="hover">
+    <el-empty v-if="planViews.length === 0" description="还没有学习计划，点击右上角新建" />
+    <el-empty
+      v-else-if="visiblePlanViews.length === 0"
+      description="没有符合筛选条件的计划"
+    >
+      <el-button @click="resetFilter">清除筛选</el-button>
+    </el-empty>
+
+    <div v-else class="plan-list">
+      <el-card v-for="{ plan, progress } in visiblePlanViews" :key="plan.id" class="plan-card" shadow="hover">
         <div class="plan-head">
           <div class="plan-title">
             <span class="plan-name">{{ plan.name }}</span>
@@ -237,6 +304,19 @@ function removePlan(plan: StudyPlan): void {
 </template>
 
 <style scoped>
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.filter-summary {
+  font-size: 13px;
+  color: #909399;
+}
+
 .plan-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
