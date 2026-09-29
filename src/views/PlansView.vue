@@ -2,8 +2,8 @@
 import { computed, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
-import type { Domain, StudyPlan, StudyResource } from '@/types'
-import { DOMAINS } from '@/constants'
+import type { Domain, PlanProgress, StudyPlan, StudyResource } from '@/types'
+import { DOMAINS, PLAN_STATUSES } from '@/constants'
 import { computePlanProgress } from '@/utils/progress'
 import { today } from '@/utils/date'
 import { uid } from '@/utils/id'
@@ -13,9 +13,18 @@ import { usePlansStore } from '@/stores/plans'
 const plansStore = usePlansStore()
 const logsStore = useLogsStore()
 
+type PlanStatus = PlanProgress['status']
+type SortField = 'created' | 'startDate' | 'progress'
+type SortOrder = 'asc' | 'desc'
+
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
 const formRef = ref<FormInstance>()
+
+const filterStatus = ref<PlanStatus | ''>('')
+const filterDomain = ref<Domain | ''>('')
+const sortField = ref<SortField>('created')
+const sortOrder = ref<SortOrder>('desc')
 
 const emptyForm = (): {
   name: string
@@ -47,6 +56,7 @@ const rules: FormRules = {
   dailyHours: [{ required: true, message: '请输入每日学习时长', trigger: 'blur' }],
 }
 
+/** 全部计划的进度视图（保持 store 内的创建顺序：新计划在前） */
 const planViews = computed(() =>
   plansStore.plans.map((plan) => ({
     plan,
@@ -54,11 +64,46 @@ const planViews = computed(() =>
   })),
 )
 
-const statusTagType: Record<string, 'info' | 'success' | 'danger' | 'primary'> = {
+/** 筛选与排序叠加后的展示列表；任一条件变化都会重新计算，结果与条件始终一致 */
+const visiblePlanViews = computed(() => {
+  const filtered = planViews.value.filter(({ plan, progress }) => {
+    if (filterStatus.value && progress.status !== filterStatus.value) return false
+    if (filterDomain.value && plan.domain !== filterDomain.value) return false
+    return true
+  })
+
+  if (sortField.value === 'created') return filtered
+
+  const factor = sortOrder.value === 'asc' ? 1 : -1
+  return [...filtered].sort((a, b) => {
+    const diff =
+      sortField.value === 'startDate'
+        ? a.plan.startDate.localeCompare(b.plan.startDate)
+        : a.progress.percent - b.progress.percent
+    // 主键相同时回退到创建顺序（新计划在前），保证排序稳定
+    return diff !== 0 ? diff * factor : b.plan.createdAt.localeCompare(a.plan.createdAt)
+  })
+})
+
+const hasPlans = computed(() => plansStore.plans.length > 0)
+const sortOrderLabel = computed(() =>
+  sortField.value === 'progress'
+    ? sortOrder.value === 'desc' ? '进度高的在前' : '进度低的在前'
+    : sortOrder.value === 'asc' ? '日期早的在前' : '日期晚的在前',
+)
+
+const statusTagType: Record<PlanStatus, 'info' | 'success' | 'danger' | 'primary'> = {
   未开始: 'info',
   进行中: 'primary',
   已完成: 'success',
   已逾期: 'danger',
+}
+
+/** 切换排序字段时给出符合直觉的默认方向 */
+function changeSortField(field: SortField): void {
+  if (field === sortField.value) return
+  sortField.value = field
+  sortOrder.value = field === 'progress' ? 'desc' : 'asc'
 }
 
 function openCreate(): void {
@@ -126,10 +171,37 @@ function removePlan(plan: StudyPlan): void {
       <el-button type="primary" @click="openCreate">新建计划</el-button>
     </div>
 
-    <el-empty v-if="planViews.length === 0" description="还没有学习计划，点击右上角新建" />
+    <div class="filter-bar">
+      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 140px">
+        <el-option v-for="s in PLAN_STATUSES" :key="s" :label="s" :value="s" />
+      </el-select>
+      <el-select v-model="filterDomain" placeholder="全部领域" clearable style="width: 140px">
+        <el-option v-for="d in DOMAINS" :key="d" :label="d" :value="d" />
+      </el-select>
+      <el-select
+        :model-value="sortField"
+        style="width: 150px"
+        @change="changeSortField"
+      >
+        <el-option label="按创建顺序" value="created" />
+        <el-option label="按开始日期" value="startDate" />
+        <el-option label="按进度" value="progress" />
+      </el-select>
+      <el-button
+        v-if="sortField !== 'created'"
+        :title="sortOrderLabel"
+        @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'"
+      >
+        {{ sortOrderLabel }}
+        <span class="sort-arrow">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+      </el-button>
+    </div>
 
-    <div class="plan-list">
-      <el-card v-for="{ plan, progress } in planViews" :key="plan.id" class="plan-card" shadow="hover">
+    <el-empty v-if="!hasPlans" description="还没有学习计划，点击右上角新建" />
+    <el-empty v-else-if="visiblePlanViews.length === 0" description="没有符合筛选条件的计划，试试调整筛选条件" />
+
+    <div v-else class="plan-list">
+      <el-card v-for="{ plan, progress } in visiblePlanViews" :key="plan.id" class="plan-card" shadow="hover">
         <div class="plan-head">
           <div class="plan-title">
             <span class="plan-name">{{ plan.name }}</span>
@@ -237,6 +309,18 @@ function removePlan(plan: StudyPlan): void {
 </template>
 
 <style scoped>
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.sort-arrow {
+  margin-left: 4px;
+  font-size: 14px;
+}
+
 .plan-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));

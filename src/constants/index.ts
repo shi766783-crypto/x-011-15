@@ -1,7 +1,10 @@
-import type { AchievementDef, CardMastery, Domain, MetricKey } from '@/types'
+import type { AchievementDef, CardMastery, Domain, MetricKey, PlanProgress } from '@/types'
 
 /** 学习领域选项 */
 export const DOMAINS: Domain[] = ['语言', '编程', '考证', '兴趣', '学科', '职场技能', '其他']
+
+/** 计划状态选项 */
+export const PLAN_STATUSES: PlanProgress['status'][] = ['未开始', '进行中', '已完成', '已逾期']
 
 /** 卡片掌握程度选项 */
 export const CARD_MASTERY_LEVELS: CardMastery[] = ['生疏', '熟悉', '精通']
